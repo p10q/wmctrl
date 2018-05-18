@@ -6,6 +6,7 @@
 #include <map>
 #include <vector>
 #include <iostream>
+#include <cmath>
 
 
 #include "common/accessibility/display.h"
@@ -15,7 +16,6 @@
 #include "common/accessibility/observer.h"
 #include "common/dispatch/cgeventtap.h"
 #include "common/config/tokenize.h"
-#include "common/ipc/daemon.h"
 #include "common/misc/carbon.h"
 #include "common/misc/workspace.h"
 #include "common/misc/assert.h"
@@ -28,7 +28,6 @@
 #include "common/accessibility/observer.cpp"
 #include "common/dispatch/cgeventtap.cpp"
 #include "common/config/tokenize.cpp"
-#include "common/ipc/daemon.cpp"
 #include "common/misc/carbon.cpp"
 #include "common/misc/workspace.mm"
 #include "common/border/border.mm"
@@ -41,67 +40,123 @@
 
 using namespace std;
 
-typedef std::map<pid_t, macos_application *> macos_application_map;
-typedef macos_application_map::iterator macos_application_map_it;
+static AXUIElementRef GetFocusedWindow() {
+    AXUIElementRef applicationRef = AXLibGetFocusedApplication();
+    if (!applicationRef)  {
+      return NULL;
+    }
 
-typedef std::map<uint32_t, macos_window *> macos_window_map;
-typedef macos_window_map::iterator macos_window_map_it;
+    AXUIElementRef windowRef = AXLibGetFocusedWindow(applicationRef);
+    if (!windowRef) {
+      CFRelease(applicationRef);
+      return NULL;
+    }
 
-
-internal macos_application_map Applications;
-internal macos_window_map Windows;
-internal pthread_mutex_t WindowsLock;
-
-macos_window_map CopyWindowCache()
-{
-    pthread_mutex_lock(&WindowsLock);
-    macos_window_map Copy = Windows;
-    pthread_mutex_unlock(&WindowsLock);
-    return Copy;
+    CFRelease(applicationRef);
+    return windowRef;
 }
 
-/*
- * NOTE(koekeishiya): We need a way to retrieve AXUIElementRef from a CGWindowID.
- * There is no way to do this, without caching AXUIElementRef references.
- * Here we perform a lookup of macos_window structs.
- */
-internal inline macos_window *
-_GetWindowByID(uint32_t Id)
-{
-    macos_window_map_it It = Windows.find(Id);
-    return It != Windows.end() ? It->second : NULL;
-}
+static int GridCount = 12;
+ 
+int getClampedLeftX(int x, int w) { return max(0, x); }
+int getClampedRightX(int x, int w) { return min(x, GridCount - w); }
+int getClampedTopY(int y, int h) { return max(0, y); }
+int getClampedBottomY(int y, int h) { return min(y, GridCount - h); }
 
-macos_window *GetWindowByID(uint32_t Id)
-{
-    pthread_mutex_lock(&WindowsLock);
-    macos_window *Result = _GetWindowByID(Id);
-    pthread_mutex_unlock(&WindowsLock);
-    return Result;
-}
+int getClampedX(int x, int w) { return getClampedLeftX(getClampedRightX(x, w), w); }
+int getClampedY(int y, int h) { return getClampedTopY(getClampedBottomY(y, h), h); }
 
-internal AXUIElementRef
-GetFocusedWindow()
-{
-    AXUIElementRef ApplicationRef = NULL, WindowRef = NULL;
-    ApplicationRef = AXLibGetFocusedApplication();
-    if (!ApplicationRef) goto out;
+int getClampedMinW(int x, int w) { return max(1, w); }
+int getClampedMinH(int y, int h) { return max(1, h); }
+int getClampedMaxW(int x, int w) { return min(GridCount - x, w); }
+int getClampedMaxH(int y, int h) { return min(GridCount - y, h); }
 
-    WindowRef = AXLibGetFocusedWindow(ApplicationRef);
-    if (!WindowRef) goto err;
+int getClampedW(int x, int w) { return getClampedMinW(x, getClampedMaxW(x, w)); }
+int getClampedH(int y, int h) { return getClampedMinH(y, getClampedMaxH(y, h)); }
 
-err:
-    CFRelease(ApplicationRef);
+struct wmctrl_win_grid_info {
+  int x, y, w, h;
 
-out:
-    return WindowRef;
-}
+  void setDisplayRect(CGRect rect, CGSize displayPixels) {
+    int displayUnitX = displayPixels.width/GridCount;
+    int displayUnitY = displayPixels.height/GridCount;
+    x = (rect.origin.x + displayUnitX/2) / displayUnitX;
+    y = (rect.origin.y + displayUnitY/2) / displayUnitY;
+    w = (rect.size.width + displayUnitX/2) / displayUnitX;
+    h = (rect.size.height + displayUnitY/2) / displayUnitY;
+  }
+
+  CGRect getDisplayRect(CGSize displayPixels) {
+    int displayUnitX = displayPixels.width/GridCount;
+    int displayUnitY = displayPixels.height/GridCount;
+    CGRect out;
+    out.origin.x = x * displayUnitX;
+    out.origin.y = y * displayUnitY;
+    out.size.width = w * displayUnitX;
+    out.size.height = h * displayUnitY;
+    return out;
+  }
+
+
+  void growFromLeftSide(int length) { int prevx = x; x = getClampedX(x - length, w); w += fabs(x - prevx); }
+  void growFromRightSide(int length) { w = getClampedW(x, w + length); }
+  void growFromTopSide(int length) { int prevy = y; y = getClampedY(y - length, h); h += fabs(y - prevy); }
+  void growFromBottomSide(int length) { h = getClampedH(y, h + length); }
+
+  void shrinkFromLeftSide(int length) { int prevx = x; x = getClampedX(x + length, w - length); w -= (x - prevx); }
+  void shrinkFromRightSide(int length) { w = getClampedW(x, w - length); }
+  void shrinkFromTopSide(int length) { int prevy = y; y = getClampedY(y + length, h - length); h -= (y - prevy); }
+  void shrinkFromBottomSide(int length) { h = getClampedH(y + length, h - length); }
+
+  bool atLeftWall() { return x == 0; }
+  bool atRightWall() { return x+w == GridCount; }
+  bool atTopWall() { return y == 0; }
+  bool atBottomWall() { return y+h == GridCount; }
+
+  void expandFullWidth() { x = 0; w = GridCount; }
+  void expandFullHeight() { y = 0; h = GridCount; }
+  
+  void setLeftHalf() { x = 0; w = GridCount / 2; y = 0; h = GridCount; }
+  void setRightHalf() { x = GridCount / 2; w = GridCount / 2; y = 0; h = GridCount; }
+  
+  void setTopHalf() { x = 0; w = GridCount; y = 0; h = GridCount / 2; }
+  void setBottomHalf() { x = 0; w = GridCount; y = GridCount / 2; h = GridCount / 2; }
+
+  void handleResizeLeft(int length) {
+    if (atLeftWall() && atRightWall()) {
+      shrinkFromRightSide(max(length / 2, 1));
+    } else {
+      setLeftHalf(); 
+    }
+  }
+  void handleResizeRight(int length) {
+    if (atLeftWall() && atRightWall()) {
+      shrinkFromLeftSide(max(length / 2, 1));
+    } else {
+      setRightHalf(); 
+    }
+  }
+  void handleResizeTop(int length) {
+    if (atTopWall() && atBottomWall()) {
+      shrinkFromBottomSide(max(length / 2, 1));
+    } else {
+      setTopHalf(); 
+    }
+  } 
+  void handleResizeBottom(int length) {
+    if (atTopWall() && atBottomWall()) {
+      shrinkFromTopSide(max(length / 2, 1));
+    } else {
+      setBottomHalf(); 
+    }
+  }
+};
 
 struct wmctrl_app {
 	static const char* help() {
 		return "Program allows for controlling the focused window.";
 	}
-	std::string direction;
+	char direction; // n (north), e (east), s (south), w (west), f (full)
 
 	wmctrl_app() {}
 
@@ -117,26 +172,36 @@ struct wmctrl_app {
 
 		NSApplicationLoad();
 		AXUIElementSetMessagingTimeout(SystemWideElement(), 1.0);
-		AXUIElementRef w = GetFocusedWindow(); 
-		cout << w << endl;
-		cout << AXLibGetWindowTitle(w) << endl;
-
-		CGPoint wPos = AXLibGetWindowPosition(w);
-		CGSize wSize = AXLibGetWindowSize(w);
-
-		CFStringRef DisplayRef = AXLibGetDisplayIdentifierFromWindowRect(wPos, wSize);
-		ASSERT(DisplayRef);
-		CGRect displayBounds = AXLibGetDisplayBounds(DisplayRef);
-
-		cout << wPos.x << endl;
-		cout << wPos.y << endl;
-		cout << wSize.width << endl;
-		cout << wSize.height << endl;
-		cout << displayBounds.origin.x << endl;
-		cout << displayBounds.origin.y << endl;
-		cout << displayBounds.size.width << endl;
-		cout << displayBounds.size.height << endl;
+		AXUIElementRef win = GetFocusedWindow();
+		CGPoint wPos = AXLibGetWindowPosition(win);
+		CGSize wSize = AXLibGetWindowSize(win);
+    CGRect displayBounds = GetDisplayBoundsFor(win);
+    
+    wmctrl_win_grid_info gridInfo;
+    gridInfo.setDisplayRect(CGRectMake(wPos.x, wPos.y, wSize.width, wSize.height), displayBounds.size);
+    switch (direction) {
+      case 'n': gridInfo.handleResizeTop(max(gridInfo.h, 1)); break;
+      case 'e': gridInfo.handleResizeRight(max(gridInfo.w, 1)); break;
+      case 's': gridInfo.handleResizeBottom(max(gridInfo.h, 1)); break;
+      case 'w': gridInfo.handleResizeLeft(max(gridInfo.w, 1)); break;
+      case 'f': gridInfo = {0, 0, GridCount, GridCount}; break;
+    }
+    CGRect dest = gridInfo.getDisplayRect(displayBounds.size);
+    AXLibSetWindowPosition(win, dest.origin.x, dest.origin.y);
+    AXLibSetWindowSize(win, dest.size.width, dest.size.height);
 	}
+
+
+  //
+  // Display bounds overall of entire screen
+  //
+  CGRect GetDisplayBoundsFor(AXUIElementRef win) {
+		CGPoint wPos = AXLibGetWindowPosition(win);
+		CGSize wSize = AXLibGetWindowSize(win);
+		CFStringRef DisplayRef = AXLibGetDisplayIdentifierFromWindowRect(wPos, wSize);
+		CGRect bounds = AXLibGetDisplayBounds(DisplayRef);
+    return bounds;
+  }
 };
 
 int main(int argc, const char* argv[]) {

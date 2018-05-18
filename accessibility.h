@@ -24,8 +24,8 @@ CheckAccessibilityPrivileges()
 inline AXUIElementRef
 SystemWideElement()
 {
-    local_persist AXUIElementRef Element;
-    local_persist dispatch_once_t Token;
+    static AXUIElementRef Element;
+    static dispatch_once_t Token;
 
     dispatch_once(&Token, ^{
         Element = AXUIElementCreateSystemWide();
