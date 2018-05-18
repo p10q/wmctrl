@@ -33,7 +33,8 @@
 #include "common/misc/workspace.mm"
 #include "common/border/border.mm"
 
-#include "utils.h"
+#include "accessibility.h"
+#include "args.h"
 
 #define internal static
 #define local_persist static
@@ -96,30 +97,48 @@ out:
     return WindowRef;
 }
 
-int main(int argc, char* argv[]) {
-	if (!CheckAccessibilityPrivileges())  {
-		cout << "CheckAccessibilityPrivileges failed" << endl;
+struct wmctrl_app {
+	static const char* help() {
+		return "Program allows for controlling the focused window.";
+	}
+	std::string direction;
+
+	wmctrl_app() {}
+
+	template<class F>
+	void parse(F f) {
+		f(direction, "--direction", "-d", args::help("direction to move or move focus or resize"), args::required());
 	}
 
-  NSApplicationLoad();
-  AXUIElementSetMessagingTimeout(SystemWideElement(), 1.0);
-  AXUIElementRef w = GetFocusedWindow(); 
-  cout << w << endl;
-  cout << AXLibGetWindowTitle(w) << endl;
+	void run() {
+		if (!CheckAccessibilityPrivileges())  {
+			cout << "CheckAccessibilityPrivileges failed" << endl;
+		}
 
-  CGPoint wPos = AXLibGetWindowPosition(w);
-  CGSize wSize = AXLibGetWindowSize(w);
+		NSApplicationLoad();
+		AXUIElementSetMessagingTimeout(SystemWideElement(), 1.0);
+		AXUIElementRef w = GetFocusedWindow(); 
+		cout << w << endl;
+		cout << AXLibGetWindowTitle(w) << endl;
 
-  CFStringRef DisplayRef = AXLibGetDisplayIdentifierFromWindowRect(wPos, wSize);
-  ASSERT(DisplayRef);
-  CGRect displayBounds = AXLibGetDisplayBounds(DisplayRef);
+		CGPoint wPos = AXLibGetWindowPosition(w);
+		CGSize wSize = AXLibGetWindowSize(w);
 
-  cout << wPos.x << endl;
-  cout << wPos.y << endl;
-  cout << wSize.width << endl;
-  cout << wSize.height << endl;
-  cout << displayBounds.origin.x << endl;
-  cout << displayBounds.origin.y << endl;
-  cout << displayBounds.size.width << endl;
-  cout << displayBounds.size.height << endl;
+		CFStringRef DisplayRef = AXLibGetDisplayIdentifierFromWindowRect(wPos, wSize);
+		ASSERT(DisplayRef);
+		CGRect displayBounds = AXLibGetDisplayBounds(DisplayRef);
+
+		cout << wPos.x << endl;
+		cout << wPos.y << endl;
+		cout << wSize.width << endl;
+		cout << wSize.height << endl;
+		cout << displayBounds.origin.x << endl;
+		cout << displayBounds.origin.y << endl;
+		cout << displayBounds.size.width << endl;
+		cout << displayBounds.size.height << endl;
+	}
+};
+
+int main(int argc, const char* argv[]) {
+  args::parse<wmctrl_app>(argc, argv);
 }

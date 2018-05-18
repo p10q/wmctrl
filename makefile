@@ -1,4 +1,4 @@
-BUILD_FLAGS		= -O0 -g -std=c++11 -Wall -Wno-deprecated -Wno-writable-strings
+BUILD_FLAGS		= -O0 -g -std=c++14 -Wall -Wno-deprecated -Wno-writable-strings
 BUILD_PATH		= ./
 BINS			= $(BUILD_PATH)/wmctrl
 DEV_BIN_PATH	= ./
@@ -11,7 +11,7 @@ NOW := $(shell date "+%s")
 
 all: $(BINS)
 
-install: BUILD_FLAGS=-O2 -std=c++11 -Wall -Wno-deprecated -Wno-writable-strings
+install: BUILD_FLAGS=-O2 -std=c++14 -Wall -Wno-deprecated -Wno-writable-strings
 install: clean $(BINS)
 dev: clean $(DEV_BINS)
 
